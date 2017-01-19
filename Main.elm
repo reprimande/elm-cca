@@ -1,6 +1,9 @@
 module Main exposing (main)
 
-import Html exposing (Html, program, div, text)
+import Html exposing (..)
+import Html.Attributes exposing (..)
+import Html.Events exposing (..)
+
 import Color exposing (..)
 import Element exposing (toHtml, show)
 import Collage exposing (..)
@@ -8,6 +11,8 @@ import Random
 import Random.Color
 import Time exposing (..)
 import Array exposing (..)
+
+-- import Components.Panel
 
 main : Program Never Model Msg
 main =
@@ -18,14 +23,14 @@ main =
         , subscriptions = subscriptions
         }
 
--- type Neighbourhood = Moore | Neumann
+type NeighbourType = Moore | Neumann
 
--- type alias Rule =
---     { range: Int
---     , threshold: Int
---     , count: Int
---     , neighbourhood: Neighbourhood
---     }
+type alias Rule =
+    { range: Int
+    , threshold: Int
+    , count: Int
+    , neighbour: NeighbourType
+    }
 
 type alias Model =
     { width: Int
@@ -33,9 +38,18 @@ type alias Model =
     , size: Int
     , cells: List (List Int)
     , colors: List Color
+    , rule: Rule
     }
 
-type Msg = Update | UpdateRandom (List (List Int))
+type Msg =
+    NoOp |
+    Update |
+    UpdateRandom (List (List Int)) |
+    SwitchTo NeighbourType |
+    UpdateRange String |
+    UpdateThreshold String |
+    UpdateCount String |
+    Randomize
 
 initModel : Model
 initModel =
@@ -44,6 +58,7 @@ initModel =
     , size = 10
     , cells = 0 |> List.repeat 50 |> List.repeat 50
     , colors = initColors
+    , rule = Rule 1 1 1 Neumann
     }
 
 init : ( Model, Cmd Msg )
@@ -86,42 +101,96 @@ getNeighbors x y cellArray =
         |> List.map(\(x, y) -> ((getCoordValue 50 x), (getCoordValue 50 y)))
         |> List.map(\(x, y) -> getCellValue x y cellArray)
 
-getNextCellValue : Int -> Int -> Int -> Array (Array Int) -> Int
-getNextCellValue x y currentValue cellArray =
+getNextCellValue : Rule -> Int -> Int -> Int -> Array (Array Int) -> Int
+getNextCellValue rule x y currentValue cellArray =
     let
-        nextValue = (currentValue + 1) % maxValue
+        nextValue = (currentValue + 1) % rule.count
         neighbors = getNeighbors x y cellArray
+        count = neighbors |> List.filter(\v -> v == nextValue) |> List.length
     in
-        if List.member nextValue neighbors then
+        if count >= rule.threshold then
             nextValue
         else
             currentValue
 
-updateCells : List (List Int) -> List (List Int)
-updateCells cells =
-    let cellArray =
-            cells
-                |> List.map(\row -> row |> Array.fromList)
-                |> Array.fromList
+updateCells : Rule -> List (List Int) -> List (List Int)
+updateCells rule cells =
+    let cellArray = cells
+                       |> List.map(\row -> row |> Array.fromList)
+                       |> Array.fromList
     in
         cells
             |> List.indexedMap(\y row -> row
-                              |> List.indexedMap(\x cell -> getNextCellValue x y cell cellArray))
+                              |> List.indexedMap(\x cell -> getNextCellValue rule x y cell cellArray))
 
 randomizeCells : Random.Generator (List (List Int))
 randomizeCells =
     Random.list 50 (Random.int 0 15)
         |> Random.list 50
 
+-- Update
+toInt : String -> Int
+toInt str =
+    case String.toInt str of
+        Ok val -> val
+        Err msg -> 0
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        UpdateRandom cells -> (Model model.width model.height model.size cells model.colors, Cmd.none)
-        Update -> (Model model.width model.height model.size (updateCells model.cells) model.colors, Cmd.none)
+        UpdateRandom cells ->
+            ( Model model.width model.height model.size cells model.colors model.rule, Cmd.none )
+        Update ->
+            ( Model model.width model.height model.size (updateCells model.rule model.cells) model.colors model.rule, Cmd.none )
+        UpdateRange range ->
+            let rule = Rule (toInt range) model.rule.threshold model.rule.count model.rule.neighbour in
+            ( Model model.width model.height model.size model.cells model.colors rule, Cmd.none )
+        UpdateThreshold threshold ->
+            let rule = Rule model.rule.range (toInt threshold) model.rule.count model.rule.neighbour in
+            ( Model model.width model.height model.size model.cells model.colors rule, Cmd.none )
+        UpdateCount count ->
+            let rule = Rule model.rule.range model.rule.threshold (toInt count) model.rule.neighbour in
+            ( Model model.width model.height model.size model.cells model.colors rule, Cmd.none )
+        Randomize ->
+            ( model, Random.generate UpdateRandom randomizeCells )
+        _ -> ( model, Cmd.none )
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
     Time.every (Time.millisecond * 50) (always Update)
+
+
+-- View
+slider : String -> Int -> Int -> (String -> Msg) -> Int -> Html Msg
+slider name_ min max msg val =
+    label []
+        [ input [ type_ "range"
+                , Html.Attributes.min <| toString min
+                , Html.Attributes.max <| toString max
+                , value <| toString val
+                , onInput msg ] []
+        , Html.text <| name_ ++ " : " ++ (toString val)
+        ]
+
+radio : String -> String -> msg -> Html msg
+radio name_ value msg =
+    label []
+        [ input [type_ "radio", name name_, onClick msg] []
+        , Html.text value
+        ]
+
+panel : Rule -> Html Msg
+panel rule =
+    div [ id "p" ]
+        [ button [ onClick Randomize ] [ Html.text "randomize" ]
+        , div []
+            [ radio "neighbor" "NM" (SwitchTo Moore)
+            , radio "neighbor" "NN" (SwitchTo Neumann)
+            ]
+        , div [] [ slider "range" 1 10 UpdateRange rule.range ]
+        , div [] [ slider "threshold" 0 30 UpdateThreshold rule.threshold ]
+        , div [] [ slider "count" 0 16 UpdateCount rule.count ]
+        ]
 
 formLine : Float -> Int -> Float -> List Color -> List Int -> List Form
 formLine size width top colors line =
@@ -131,17 +200,21 @@ formLine size width top colors line =
         List.indexedMap(\x cell -> rect size size
                        |> filled (getCellColor colors cell)
                        |> move ((toFloat x) * size - offset, top)) line
-
 view : Model -> Html Msg
 view model =
     let
         w = model.width
         h = model.height
-        l = toFloat w / 2
-        t = toFloat h / 2
         s = toFloat model.size
-        yoffset = t - (s / 2)
+        yoffset = (toFloat h / 2) - (s / 2)
         cells = model.cells
         colors = model.colors
     in
-        toHtml (collage w h [ group(List.concat (List.indexedMap(\y line -> formLine s w ((toFloat y) * s - yoffset) colors line) cells)) ])
+        div [] [
+             panel model.rule
+            , collage w h [ cells
+                          |> List.indexedMap(\y line -> formLine s w ((toFloat y) * s - yoffset) colors line)
+                          |> List.concat
+                          |> group
+                          ] |> toHtml
+            ]
